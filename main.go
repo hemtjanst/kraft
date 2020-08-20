@@ -17,7 +17,10 @@ import (
 )
 
 const (
-	currentPower         = string(feature.CurrentPower)
+
+	// Re-use currentPower from hemtjanst for positive power (i.e. power flowing into the system from the grid)
+	currentPower = string(feature.CurrentPower)
+	// Define a custom feature for produced power (e.g. if exporting Solar power to the grid)
 	currentPowerProduced = "currentPowerProduced"
 	energyUsed           = string(feature.EnergyUsed)
 	energyProduced       = "energyProduced"
@@ -39,6 +42,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("connecting to mqtt: %v", err)
 	}
+
+	// Spawn a goroutine to detect MQTT errors and handle reconnect
 	go func() {
 		for {
 			ok, err := mq.Start()
@@ -55,8 +60,13 @@ func main() {
 
 	var d client.Device
 
+	// pushData gets called on each message
 	pushData := func(msg *kaifa.Message) {
 		if d == nil {
+			// Device is created once the first message is received
+			// since we need to know which features are supported
+			// and the model/serial number
+
 			var err error
 			info := &device.Info{
 				Topic:        *topicName,
@@ -98,21 +108,27 @@ func main() {
 		}
 
 		if msg.ActivePowerPositive != nil {
+			// Power imported from the grid in Watts
 			_ = d.Feature(currentPower).Update(fmt.Sprintf("%d", *msg.ActivePowerPositive))
 		}
 		if msg.ActivePowerNegative != nil {
+			// Power exported to the grid in Watts
 			_ = d.Feature(currentPowerProduced).Update(fmt.Sprintf("%d", *msg.ActivePowerNegative))
 		}
 
 		for _, ph := range msg.Phases {
+			// Current in Amperes
 			_ = d.Feature(fmt.Sprintf(phaseCurrent, ph.Index)).Update(fmt.Sprintf("%.3f", ph.Current))
+			// Voltage in Volts
 			_ = d.Feature(fmt.Sprintf(phaseVoltage, ph.Index)).Update(fmt.Sprintf("%.1f", ph.Voltage))
 		}
 
 		if msg.ActiveEnergyPositive != nil {
+			// Convert to float and divide by 1000 to get kWh
 			_ = d.Feature(energyUsed).Update(fmt.Sprintf("%.3f", float64(*msg.ActiveEnergyPositive)/1000))
 		}
 		if msg.ActiveEnergyNegative != nil {
+			// Convert to float and divide by 1000 to get kWh
 			_ = d.Feature(energyProduced).Update(fmt.Sprintf("%.3f", float64(*msg.ActiveEnergyNegative)/1000))
 		}
 
@@ -132,6 +148,7 @@ func main() {
 	r := kaifa.NewReader(s)
 
 	for {
+		// Main loop, keep reading frames until serial closes or program is terminated
 		fr, err := r.ReadFrame()
 		if err != nil {
 			if err == io.EOF {
