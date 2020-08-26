@@ -7,21 +7,40 @@ import (
 )
 
 func Unmarshal(data []byte) (*Message, error) {
+	buf := NewBuffer(data)
 
 	var err error
 	m := &Message{}
 
-	// Read header and metadata. Currently not used or exported
-	if data, err = m.header.Unmarshal(data); err != nil {
+	if err := buf.ReadRaw(&m.header.Length); err != nil {
 		return m, err
 	}
-	if data, err = m.meta.Unmarshal(data); err != nil {
+	b0 := uint8((m.header.Length & 0xF800) >> 8)
+	m.header.Length = m.header.Length & 0x07FF
+	m.header.Separator = (b0 & 0x08) > 0
+	m.header.Format = b0 & 0xF0
+
+	err = buf.ReadRaw(
+		&m.header.DestAddr,
+		&m.header.SrcAddr,
+		&m.header.ControlField,
+		&m.header.Checksum,
+		&m.meta.LsapDest,
+		&m.meta.LsapSrc,
+		&m.meta.LlcQuality,
+	)
+
+	if err != nil {
+		return m, err
+	}
+	m.meta.Meta = make([]byte, 5)
+	if err := buf.ReadRaw(m.meta.Meta); err != nil {
 		return m, err
 	}
 
 	// Read timestamp blob as LV Data
 	var tsData []byte
-	if tsData, data, err = unmarshalLvData(data); err != nil {
+	if err = buf.ReadType(&tsData); err != nil {
 		return m, err
 	}
 	if m.Timestamp, err = parseTimestamp(tsData); err != nil {
@@ -34,9 +53,8 @@ func Unmarshal(data []byte) (*Message, error) {
 	fullHdr := true
 	phases := 0
 
-	var itemCount int
-
-	if itemCount, data, err = unmarshalUint8(data); err != nil {
+	var itemCount uint8
+	if err := buf.ReadType(&itemCount); err != nil {
 		return m, err
 	}
 
@@ -46,11 +64,9 @@ func Unmarshal(data []byte) (*Message, error) {
 		return m, nil
 	case 1:
 		// For a single item only the Active Power imported from the grid is reported
-		activePowerPositive, _, err := unmarshalInt32(data)
-		if err != nil {
+		if err := buf.ReadType(m.ActivePowerPositive); err != nil {
 			return m, err
 		}
-		m.ActivePowerPositive = &activePowerPositive
 
 		// Skip reading the full header
 		fullHdr = false
@@ -73,39 +89,26 @@ func Unmarshal(data []byte) (*Message, error) {
 	}
 
 	if fullHdr {
-		// Version, Serial number and Model is read as LV strings
-		var version, meterID, meterType string
-		if version, data, err = unmarshalLvString(data); err != nil {
-			return m, err
-		}
-		m.Version = &version
-		if meterID, data, err = unmarshalLvString(data); err != nil {
-			return m, err
-		}
-		m.MeterID = &meterID
-		if meterType, data, err = unmarshalLvString(data); err != nil {
-			return m, err
-		}
-		m.MeterType = &meterType
+		m.Version = new(string)
+		m.MeterID = new(string)
+		m.MeterType = new(string)
+		m.ActivePowerPositive = new(int32)
+		m.ActivePowerNegative = new(int32)
+		m.ReactivePowerPositive = new(int32)
+		m.ReactivePowerNegative = new(int32)
 
-		// Active and reactive power values
-		var actPos, actNeg, reactPos, reactNeg int
-		if actPos, data, err = unmarshalInt32(data); err != nil {
+		err := buf.ReadType(
+			m.Version,
+			m.MeterID,
+			m.MeterType,
+			m.ActivePowerPositive,
+			m.ActivePowerNegative,
+			m.ReactivePowerPositive,
+			m.ReactivePowerNegative,
+		)
+		if err != nil {
 			return m, err
 		}
-		m.ActivePowerPositive = &actPos
-		if actNeg, data, err = unmarshalInt32(data); err != nil {
-			return m, err
-		}
-		m.ActivePowerNegative = &actNeg
-		if reactPos, data, err = unmarshalInt32(data); err != nil {
-			return m, err
-		}
-		m.ReactivePowerPositive = &reactPos
-		if reactNeg, data, err = unmarshalInt32(data); err != nil {
-			return m, err
-		}
-		m.ReactivePowerNegative = &reactNeg
 	}
 
 	if phases > 0 {
@@ -113,8 +116,8 @@ func Unmarshal(data []byte) (*Message, error) {
 
 		// First is current (Amperes) for each phase
 		for i := 0; i < phases; i++ {
-			var cur int
-			if cur, data, err = unmarshalInt32(data); err != nil {
+			var cur int32
+			if err := buf.ReadType(&cur); err != nil {
 				return m, err
 			}
 			m.Phases[i].Index = i + 1
@@ -123,15 +126,16 @@ func Unmarshal(data []byte) (*Message, error) {
 
 		// Then the voltage for each phase
 		for i := 0; i < phases; i++ {
-			var voltage int
-			if voltage, data, err = unmarshalInt32(data); err != nil {
+			var voltage int32
+			if err := buf.ReadType(&voltage); err != nil {
 				return m, err
 			}
 			m.Phases[i].Voltage = float64(voltage) / 10
 		}
 	}
 	if energy {
-		if tsData, data, err = unmarshalLvData(data); err != nil {
+		var tsData []byte
+		if err := buf.ReadType(&tsData); err != nil {
 			return m, err
 		}
 		if ts, err := parseTimestamp(tsData); err != nil {
@@ -140,82 +144,31 @@ func Unmarshal(data []byte) (*Message, error) {
 			m.EnergyTimestamp = &ts
 		}
 
-		var actPos, actNeg, reactPos, reactNeg int
-		if actPos, data, err = unmarshalInt32(data); err != nil {
+		m.ActiveEnergyPositive = new(int32)
+		m.ActiveEnergyNegative = new(int32)
+		m.ReactiveEnergyPositive = new(int32)
+		m.ReactiveEnergyNegative = new(int32)
+		err := buf.ReadType(
+			m.ActiveEnergyPositive,
+			m.ActiveEnergyNegative,
+			m.ReactiveEnergyPositive,
+			m.ReactiveEnergyNegative,
+		)
+		if err != nil {
 			return m, err
 		}
-		m.ActiveEnergyPositive = &actPos
-		if actNeg, data, err = unmarshalInt32(data); err != nil {
-			return m, err
-		}
-		m.ActiveEnergyNegative = &actNeg
-		if reactPos, data, err = unmarshalInt32(data); err != nil {
-			return m, err
-		}
-		m.ReactiveEnergyPositive = &reactPos
-		if reactNeg, data, err = unmarshalInt32(data); err != nil {
-			return m, err
-		}
-		m.ReactiveEnergyNegative = &reactNeg
 	}
 
-	if len(data) < 2 {
-		return m, fmt.Errorf("too few bytes (checksum)")
+	if err := buf.ReadRaw(&m.checksum); err != nil {
+		return m, err
 	}
-	m.checksum = (uint16(data[0]) << 8) | uint16(data[1])
-	// TODO: Validate checksum
-	data = data[2:]
-	if len(data) > 0 {
+
+	if buf.Len() > 0 {
 		return m, fmt.Errorf("trailing data: %X", data)
 	}
 
 	return m, nil
 
-}
-
-func unmarshalLvString(data []byte) (string, []byte, error) {
-	b, data, err := unmarshalLvData(data)
-	return string(b), data, err
-}
-
-func unmarshalLvData(data []byte) ([]byte, []byte, error) {
-	if len(data) < 2 {
-		return nil, nil, fmt.Errorf("too few bytes (lvdata)")
-	}
-	if data[0] != 0x09 {
-		return nil, nil, fmt.Errorf("lvdata: wrong item type, expected 0x09, got 0x%02X", data[0])
-	}
-	ln := int(data[1])
-	data = data[2:]
-	if ln == 0 {
-		return nil, data, nil
-	}
-	if ln > len(data) {
-		return nil, nil, fmt.Errorf("lvdata: length exceeds frame size: %d, remaining: %X", ln, data)
-	}
-
-	return data[:ln], data[ln:], nil
-
-}
-
-func unmarshalUint8(data []byte) (int, []byte, error) {
-	if len(data) < 2 {
-		return 0, nil, fmt.Errorf("too few bytes (uint8)")
-	}
-	if data[0] != 0x02 {
-		return 0, nil, fmt.Errorf("uint8: wrong item type, expected 0x02, got 0x%02X", data[0])
-	}
-	return int(data[1]), data[2:], nil
-}
-
-func unmarshalInt32(data []byte) (int, []byte, error) {
-	if len(data) < 5 {
-		return 0, nil, fmt.Errorf("too few bytes (uint8)")
-	}
-	if data[0] != 0x06 {
-		return 0, nil, fmt.Errorf("uint8: wrong item type, expected 0x02, got 0x%02X", data[0])
-	}
-	return int(int32(binary.BigEndian.Uint32(data[1:5]))), data[5:], nil
 }
 
 func parseTimestamp(data []byte) (time.Time, error) {
