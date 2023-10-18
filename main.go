@@ -159,8 +159,7 @@ func main() {
 		}
 		msg, err := kaifa.Unmarshal(fr)
 		if err != nil {
-			log.Printf("Error unmarshalling frame: %v\nData: %X", err, fr)
-			continue
+			log.Fatalf("Error unmarshalling frame: %v\nData: %X", err, fr)
 		}
 
 		pushData(msg)
