@@ -140,11 +140,22 @@ func main() {
 		Parity: serial.ParityEven,
 		Size:   8,
 	}
+
+	// Open serial to read & discard everything for 200ms to drain incoming buffer
 	s, err := serial.OpenPort(cfg)
 	if err != nil {
 		log.Fatalf("error opening %s: %v", *serialDevice, err)
 	}
+	go func() {
+		_, _ = io.ReadAll(s)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	_ = s.Close()
 
+	s, err = serial.OpenPort(cfg)
+	if err != nil {
+		log.Fatalf("error opening %s: %v", *serialDevice, err)
+	}
 	r := kaifa.NewReader(s)
 
 	for {

@@ -18,8 +18,8 @@ func NewReader(r io.Reader) Reader {
 }
 
 func (r *reader) ReadFrame() ([]byte, error) {
-	buf := make([]byte, 4096)
 	for {
+		buf := make([]byte, 4096)
 		n, err := r.r.Read(buf)
 		if err != nil {
 			return nil, err
